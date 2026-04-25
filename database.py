@@ -25,33 +25,95 @@ class DataBaseController:
         conn = psycopg2.connect(host=host, port=port, dbname=dbname, user=user, password=password)
         return conn
 
+    def _pg_connect(self):
+        conn = self._raw_pg_connect()
+        register_vector(conn)
+        return conn
+
     def _ensure_vector_extension(self, conn):
         cur = conn.cursor()
         cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
 
-    def _create_table_if_needed(self, conn, table: str, dim: int):
-        with self._raw_pg_connect().cursor() as cur:
-            cur.execute(
-                f"""
-                CREATE TABLE IF NOT EXISTS {table} (
-                    id SERIAL PRIMARY KEY,
-                    title TEXT,
-                    source TEXT,
-                    chunk TEXT,
-                    embedding vector({dim})
-                );
-                """
-            )
+    def _create_tables_if_needed(self, conn, dim: int):
+        cur = conn.cursor()
+        cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {self.sources_table} (
+                id SERIAL PRIMARY KEY,
+                title TEXT,
+                source_url TEXT UNIQUE,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
+            );
+            """
+        )
+        cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {self.embeddings_table} (
+                id SERIAL PRIMARY KEY,
+                source_id INTEGER NOT NULL REFERENCES {self.sources_table}(id) ON DELETE CASCADE,
+                chunk TEXT NOT NULL,
+                embedding vector({dim}) NOT NULL,
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            );
+            """
+        )
+        cur.execute(
+            f"""
+            CREATE INDEX IF NOT EXISTS idx_{self.embeddings_table}_source_id
+            ON {self.embeddings_table} (source_id);
+            """
+        )
 
-    def insert_vector(self, title, source, chunk, vector):
-        with self._raw_pg_connect() as conn:
+    def insert_or_replace_source_embeddings(self, title: str, source: str, chunks: List[str], vectors: List[List[float]]):
+        if not chunks or not vectors:
+            return
+        if len(chunks) != len(vectors):
+            raise ValueError("chunks and vectors must have the same length")
+
+        source_url = source.strip() if source and source.strip() else None
+
+        with self._pg_connect() as conn:
             cur = conn.cursor()
-            cur.execute(f"INSERT INTO {self.vector_table} (title, source, chunk, embedding) VALUES (%s, %s, %s, %s)", (title, source, chunk, vector))
+            if source_url is not None:
+                cur.execute(
+                    f"""
+                    INSERT INTO {self.sources_table} (title, source_url, updated_at)
+                    VALUES (%s, %s, NOW())
+                    ON CONFLICT (source_url)
+                    DO UPDATE SET title = EXCLUDED.title, updated_at = NOW()
+                    RETURNING id;
+                    """,
+                    (title, source_url),
+                )
+            else:
+                cur.execute(
+                    f"INSERT INTO {self.sources_table} (title, source_url, updated_at) VALUES (%s, %s, NOW()) RETURNING id;",
+                    (title, None),
+                )
+            source_id = cur.fetchone()[0]
+
+            cur.execute(f"DELETE FROM {self.embeddings_table} WHERE source_id = %s;", (source_id,))
+
+            rows = [(source_id, chunk, vector) for chunk, vector in zip(chunks, vectors)]
+            cur.executemany(
+                f"INSERT INTO {self.embeddings_table} (source_id, chunk, embedding) VALUES (%s, %s, %s);",
+                rows,
+            )
             conn.commit()
 
     def query_similar_vectors(self, query_vector, top_k=5):
-        with self._raw_pg_connect() as conn:
+        with self._pg_connect() as conn:
             cur = conn.cursor()
-            cur.execute(f"SELECT title, source, chunk FROM {self.vector_table} ORDER BY embedding <-> %s LIMIT %s;", (query_vector, top_k))
+            cur.execute(
+                f"""
+                SELECT s.title, s.source_url, e.chunk
+                FROM {self.embeddings_table} e
+                JOIN {self.sources_table} s ON s.id = e.source_id
+                ORDER BY e.embedding <-> %s
+                LIMIT %s;
+                """,
+                (query_vector, top_k),
+            )
             results = cur.fetchall()
             return results
