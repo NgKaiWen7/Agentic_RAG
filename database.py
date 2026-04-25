@@ -2,16 +2,19 @@ import psycopg2
 from pgvector.psycopg2 import register_vector
 import dotenv
 import os
+from typing import List
 
 dotenv.load_dotenv()  # Load environment variables from .env file
 
 class DataBaseController:
-    def __init__(self, table: str = 'vectors', dim: int = 384):
-        self.vector_table = table
+    def __init__(self, dim: int = 384):
+        self.sources_table = "sources"
+        self.embeddings_table = "embeddings"
+        self.dim = dim
         with self._raw_pg_connect() as conn:
             self._ensure_vector_extension(conn)
             register_vector(conn)
-            self._create_table_if_needed(conn, table, dim)
+            self._create_tables_if_needed(conn, dim)
 
     def _raw_pg_connect(self):
         host = os.getenv('POSTGRES_HOST', 'localhost')
