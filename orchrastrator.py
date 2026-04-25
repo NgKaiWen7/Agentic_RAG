@@ -1,18 +1,13 @@
 import os
 from langchain_ollama import OllamaLLM
 from langchain_classic.agents import initialize_agent, Tool
-from ollama import web_search
 import requests
 import json
-from dotenv import load_dotenv
 import warnings
-import faiss
-import pickle
 from sentence_transformers import SentenceTransformer
 from typing import List
 from database import DataBaseController
-from rag_system import _get_embed_model
-from rag_system import _get_embed_model
+from langchain_core.prompts import ChatPromptTemplate
 
 # Suppress LangChain deprecation warnings about LangGraph and Chain.run
 try:
@@ -22,31 +17,57 @@ except Exception:
     warnings.filterwarnings("ignore", message=".*LangGraph.*")
     warnings.filterwarnings("ignore", message=".*Chain.run.*")
 
-# Load environment variables
-load_dotenv()
-
-
-# Note: local documents have been removed. The LLM will decide whether to call
-# `WebSearch` (provided below) when it needs external information.
-
-# Function for web search (using the API from trial.py)
+def _chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> List[str]:
+    """Simple deterministic chunker: splits text into overlapping chunks."""
+    if not text:
+        return []
+    text = text.strip()
+    chunks = []
+    start = 0
+    length = len(text)
+    while start < length:
+        end = start + chunk_size
+        chunk = text[start:end]
+        chunks.append(chunk)
+        if end >= length:
+            break
+        start = end - overlap
+    return chunks
 
 class Orchestrator:
     def __init__(self):
         tools = [
-            Tool(name="WebSearch", func=self.web_search, description="Search real-time web data for current information; returns summary plus SOURCES block."),
+            Tool(name="WebSearch", func=self.web_search, description="Search real-time web data for current information and inserts the results into the local RAG vector DB."),
             Tool(name="RAGSearch", func=self.rag_search, description="Search the local RAG vector DB (Postgres+pgvector) for relevant chunks; input should be a short search query.")
         ]
         llm = OllamaLLM(model="llama3", base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"))
+        prompt = ChatPromptTemplate.from_messages([
+            ("system",
+            "You are a retrieval-augmented assistant.\n"
+            "You MUST use tools when needed before answering.\n\n"
+            "Rules:\n"
+            "1. If the question requires factual or specific information, ALWAYS use RAGSearch first.\n"
+            "2. If RAGSearch is insufficient, you may use WebSearch.\n"
+            "3. Never guess facts without tool results.\n"
+            "4. After receiving tool results, read them carefully and synthesize a final answer.\n"
+            "5. Keep answers concise and factual."),
+            ("human", "{input}")
+        ])
         self.agent = initialize_agent(
             tools,
             llm,
-            verbose=True
+            verbose=True,
+            agent_kwargs={"prompt": prompt}
         )
 
         self._embed_model = SentenceTransformer("all-MiniLM-L6-v2")
 
         self._db = DataBaseController()  # Initialize the database controller
+    
+    def agentic_rag_query(self, query: str) -> str:
+        """Main entry point: runs the agent with the given query."""
+        response = self.agent.run(query)
+        return response
 
     def web_search(self, query):
         url = "https://api.langsearch.com/v1/web-search"
@@ -73,157 +94,21 @@ class Orchestrator:
             title = page.get("name") or page.get("title") or f"web_result_{i}"
             url = page.get("url") or page.get("link") or ""
             summary = page.get("summary")
-            for ch in chunk_text(summary, chunk_size=500, overlap=50):
-                self.db.insert_vector(id=None, title=title, source=url, chunk=ch, vector=None)
+            for ch in _chunk_text(summary, chunk_size=500, overlap=50):
+                vector = self._embed_model.encode([ch], show_progress_bar=False)[0].tolist()
+                self._db.insert_vector(title=title, source=url, chunk=ch, vector=vector)
+        return f"Web search successful: ingested {len(pages)} pages into RAG DB."
 
 
-    def rag_search(self, query: str, k: int = 5, table: str = 'embeddings') -> str:
+    def rag_search(self, query: str, k: int = 5) -> str:
         """Run a vector similarity search in Postgres (pgvector) and return concise results."""
         model = self._embed_model
         qvec = model.encode([query], show_progress_bar=False)[0].tolist()
-        rows = self._db.query_similar_vectors(qvec, top_k=k)
+        rows = self._db.query_similar_vectors(str(qvec), top_k=k)
         parts = []
         for row in rows:
-            title, source, chunk, dist = row
-            parts.append(f"{title} ({source})\n{chunk}\nDIST: {dist}")
+            title, source, chunk = row
+            parts.append(f"{title} ({source})\n{chunk}\n")
         if not parts:
             return "No RAG results found."
         return "\n\n---\n\n".join(parts)
-
-
-def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> List[str]:
-    """Simple deterministic chunker: splits text into overlapping chunks."""
-    if not text:
-        return []
-    text = text.strip()
-    chunks = []
-    start = 0
-    length = len(text)
-    while start < length:
-        end = start + chunk_size
-        chunk = text[start:end]
-        chunks.append(chunk)
-        if end >= length:
-            break
-        start = end - overlap
-    return chunks
-
-
-def ingest_webpages(query: str, index_path: str = "faiss_index.idx", meta_path: str = "faiss_meta.pkl",
-                    count: int = 5, chunk_size: int = 500, overlap: int = 50):
-    """Search the web, split results into chunks, embed them, and store into a FAISS index.
-
-    Returns metadata about ingested documents (number of vectors, saved paths).
-    """
-    pages = self.raw_web_search(query, count=count)
-    if not pages:
-        return {"status": "no_results", "ingested": 0}
-
-    chunks = []
-    metadatas = []
-    for pi, page in enumerate(pages):
-        title = page.get("name") or page.get("title") or f"web_result_{pi}"
-        url = page.get("url") or page.get("link") or ""
-        content = page.get("summary") or page.get("snippet") or ""
-        # fallback to title if no content
-        if not content:
-            content = title
-        page_chunks = chunk_text(content, chunk_size=chunk_size, overlap=overlap)
-        for ci, ch in enumerate(page_chunks):
-            chunks.append(ch)
-            metadatas.append({
-                "source": url,
-                "title": title,
-                "page_index": pi,
-                "chunk_index": ci,
-            })
-
-    if not chunks:
-        return {"status": "no_chunks", "ingested": 0}
-
-    model = _get_embed_model()
-    embeddings = model.encode(chunks, show_progress_bar=False)
-
-    # Build FAISS index (flat L2 index)
-    import numpy as np
-    vecs = np.array(embeddings).astype('float32')
-    dim = vecs.shape[1]
-    index = faiss.IndexFlatL2(dim)
-    index.add(vecs)
-
-    # Save index and metadata
-    faiss.write_index(index, index_path)
-    with open(meta_path, 'wb') as f:
-        pickle.dump(metadatas, f)
-
-    return {"status": "ok", "ingested": len(chunks), "index_path": index_path, "meta_path": meta_path}
-
-def ingest_webpages_to_postgres(query: str, table: str = 'embeddings', count: int = 5, chunk_size: int = 500, overlap: int = 50):
-    """Search the web, chunk, embed, and ingest into Postgres (pgvector).
-
-    Returns metadata about ingestion.
-    """
-    pages = raw_web_search(query, count=count)
-    if not pages:
-        return {"status": "no_results", "ingested": 0}
-
-    chunks = []
-    metadatas = []
-    for pi, page in enumerate(pages):
-        title = page.get("name") or page.get("title") or f"web_result_{pi}"
-        url = page.get("url") or page.get("link") or ""
-        content = page.get("summary") or page.get("snippet") or ""
-        if not content:
-            content = title
-        page_chunks = chunk_text(content, chunk_size=chunk_size, overlap=overlap)
-        for ci, ch in enumerate(page_chunks):
-            chunks.append(ch)
-            metadatas.append({"title": title, "source": url, "page_index": pi, "chunk_index": ci})
-
-    if not chunks:
-        return {"status": "no_chunks", "ingested": 0}
-
-    model = _get_embed_model()
-    embeddings = model.encode(chunks, show_progress_bar=False)
-    import numpy as np
-    vecs = np.array(embeddings).astype('float32')
-    dim = vecs.shape[1]
-
-    _create_table_if_needed(table, dim)
-
-    conn = _pg_connect()
-    cur = conn.cursor()
-    for ch, meta, vec in zip(chunks, metadatas, vecs):
-        cur.execute(
-            f"INSERT INTO {table} (title, source, chunk, embedding) VALUES (%s, %s, %s, %s);",
-            (meta.get('title'), meta.get('source'), ch, vec.tolist())
-        )
-    conn.commit()
-    cur.close()
-    conn.close()
-
-    return {"status": "ok", "ingested": len(chunks), "table": table}
-
-
-
-
-# For citations, we can modify to return sources
-def agentic_rag_query(query):
-    # Instruct the agent to prefer its own knowledge and only call WebSearch when
-    # unsure or when up-to-date info is required. If it uses WebSearch, include
-    # the SOURCES block from the tool output in the final answer.
-    instruction = (
-        "You are a knowledgeable assistant. Prefer answering from your internal knowledge. "
-        "If you need fresh or recent information, first try the 'RAGSearch' tool which queries the local vector DB. "
-        "When calling 'RAGSearch', modify the user's query to a concise search phrase (e.g., shorten or add keywords) and pass that as the tool input. "
-        "Call the 'WebSearch' tool only if RAGSearch does not return sufficient evidence or if live web retrieval is required. "
-        "When you use WebSearch, cite the SOURCES section.\n\n"
-    )
-    response = agent.invoke(instruction + query, handle_parsing_errors=True)
-    return response
-
-if __name__ == "__main__":
-    query = "What is the latest RAG system?"
-    answer = agentic_rag_query(query)
-    print(answer)
-    print("When you are done, write: Final Answer: <answer>. Do NOT output Action: none or any tool name unless calling a registered tool.")
