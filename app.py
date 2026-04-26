@@ -1,29 +1,43 @@
 import streamlit as st
-from orchrastrator import agentic_rag_query
+from orchrastrator import Orchestrator
 
+
+@st.cache_resource(show_spinner=True)
+def get_orchestrator() -> Orchestrator:
+    return Orchestrator()
+
+
+st.set_page_config(page_title="Agentic RAG Demo", page_icon=":mag:")
 st.title("Agentic RAG Demo")
+st.caption("Ask questions with Agentic RAG (tool-using retrieval + answering).")
 
-st.markdown("""
-This is a demonstration of an Agentic RAG system that can retrieve information from local documents and web sources.
-The agent uses reasoning to decide whether to search local docs, web, or both.
-""")
+try:
+    orchestrator = get_orchestrator()
+except Exception as exc:
+    st.error(f"Failed to initialize orchestrator: {exc}")
+    st.stop()
 
-query = st.text_input("Enter your query:", "Latest trends in badminton analytics")
+query = st.text_input("Enter your query", "")
 
-if st.button("Ask"):
-    with st.spinner("Processing..."):
-        answer = agentic_rag_query(query)
-    st.write("**Answer:**")
-    st.write(answer)
+if st.button("Ask (Agentic RAG)", type="primary", use_container_width=True):
+    if not query.strip():
+        st.warning("Please enter a query.")
+    else:
+        with st.spinner("Running agentic retrieval and generating answer..."):
+            result = orchestrator.agentic_rag_query(query)
+            references = orchestrator.get_references(query)
 
-st.markdown("""
-### How it works:
-1. The agent analyzes the query
-2. Decides which tools to use (LocalSearch, WebSearch)
-3. Retrieves relevant information
-4. Generates a coherent answer
+        st.subheader("Model Response")
+        st.write(result)
 
-### Differences from Traditional RAG:
-- **Traditional RAG**: Direct retrieval based on similarity
-- **Agentic RAG**: Agent reasons about what to retrieve, can use multiple sources, refine queries
-""")
+        st.subheader("References")
+        if references:
+            for idx, ref in enumerate(references, start=1):
+                title = ref.get("title", "Untitled")
+                source = ref.get("source", "")
+                if source:
+                    st.markdown(f"{idx}. [{title}]({source})")
+                else:
+                    st.markdown(f"{idx}. {title}")
+        else:
+            st.write("No references found.")

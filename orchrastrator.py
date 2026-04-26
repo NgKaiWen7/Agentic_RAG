@@ -40,27 +40,33 @@ def _chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> List[str
 class Orchestrator:
     def __init__(self):
         tools = [
-            Tool(name="WebSearch", func=self.web_search, description="Search real-time web data for current information and inserts the results into the local RAG vector DB."),
+            # Tool(name="WebSearch", func=self.web_search, description="Search real-time web data for current information and inserts the results into the local RAG vector DB."),
             Tool(name="WebSearchTavily", func=self.web_search_tavily, description="Search real-time web data using Tavily and insert the results into the local RAG vector DB."),
             Tool(name="RAGSearch", func=self.rag_search, description="Search the local RAG vector DB (Postgres+pgvector) for relevant chunks; input should be a short search query.")
         ]
         llm = OllamaLLM(model="llama3", base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"))
+        self._llm = llm
         prompt = ChatPromptTemplate.from_messages([
             ("system",
             "You are a retrieval-augmented assistant.\n"
             "You MUST use tools when needed before answering.\n\n"
             "Rules:\n"
-            "1. If the question requires factual or specific information, ALWAYS use RAGSearch first.\n"
-            "2. If RAGSearch is insufficient, you may use WebSearch.\n"
-            "3. Never guess facts without tool results.\n"
-            "4. After receiving tool results, read them carefully and synthesize a final answer.\n"
-            "5. Keep answers concise and factual."),
+            "1. You may call AT MOST ONE WebSearchTavily per user query.\n"
+            "2. Prefer RAGSearch first for factual questions.\n"
+            "3. If you call a tool once, you MUST then provide FINAL ANSWER immediately.\n"
+            "4. Never call a second tool in the same query.\n"
+            "5. If results are weak, state limitations and stop.\n"
+            "6. Keep answers concise and factual."),
             ("human", "{input}")
         ])
         self.agent = initialize_agent(
             tools,
             llm,
             verbose=True,
+            max_iterations=None,
+            max_execution_time=None,
+            handle_parsing_errors=True,
+            early_stopping_method="generate",
             agent_kwargs={"prompt": prompt}
         )
 
@@ -69,9 +75,29 @@ class Orchestrator:
         self._db = DataBaseController()  # Initialize the database controller
     
     def agentic_rag_query(self, query: str) -> str:
-        """Main entry point: runs the agent with the given query."""
-        response = self.agent.run(query)
-        return response
+        """Agentic RAG flow: let the agent decide and use tools before final answer."""
+        try:
+            return self.agent.run(query)
+        except Exception:
+            # Compatibility fallback for agent executors returning structured output.
+            try:
+                result = self.agent.invoke({"input": query})
+                if isinstance(result, dict):
+                    return str(result.get("output") or result)
+                return str(result)
+            except Exception as exc:
+                # Final guarantee path: always return an answer to the user.
+                rag_context = self.rag_search(query)
+                fallback_prompt = (
+                    "Provide the best possible helpful answer to the user.\n"
+                    "If context is provided, use it. If context is weak or empty, "
+                    "still provide a useful general answer and mention limitations briefly.\n\n"
+                    f"Question: {query}\n\n"
+                    f"Context:\n{rag_context}\n\n"
+                    f"Internal error to ignore and recover from: {exc}\n\n"
+                    "Final answer:"
+                )
+                return self._llm.invoke(fallback_prompt)
 
     def _ingest_source(self, title: str, source: str, text: str) -> int:
         chunks = _chunk_text(text, chunk_size=500, overlap=50)
@@ -175,9 +201,7 @@ class Orchestrator:
 
     def rag_search(self, query: str, k: int = 5) -> str:
         """Run a vector similarity search in Postgres (pgvector) and return concise results."""
-        model = self._embed_model
-        qvec = model.encode([query], show_progress_bar=False)[0].tolist()
-        rows = self._db.query_similar_vectors(qvec, top_k=k)
+        rows = self._rag_search_rows(query, k=k)
         parts = []
         for row in rows:
             title, source, chunk = row
@@ -185,3 +209,26 @@ class Orchestrator:
         if not parts:
             return "No RAG results found."
         return "\n\n---\n\n".join(parts)
+
+    def _rag_search_rows(self, query: str, k: int = 5):
+        model = self._embed_model
+        qvec = model.encode([query], show_progress_bar=False)[0].tolist()
+        return self._db.query_similar_vectors(qvec, top_k=k)
+
+    def get_references(self, query: str, k: int = 5) -> List[dict]:
+        """Return deduplicated references for top-k retrieved chunks."""
+        rows = self._rag_search_rows(query, k=k)
+        refs = []
+        seen = set()
+        for title, source, _chunk in rows:
+            key = (title or "", source or "")
+            if key in seen:
+                continue
+            seen.add(key)
+            refs.append({"title": title or "Untitled", "source": source or ""})
+        return refs
+
+
+def agentic_rag_query(query: str) -> str:
+    """Backwards-compatible helper for callers expecting a module-level function."""
+    return Orchestrator().agentic_rag_query(query)

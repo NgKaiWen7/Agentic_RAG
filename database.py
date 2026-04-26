@@ -11,23 +11,18 @@ class DataBaseController:
         self.sources_table = "sources"
         self.embeddings_table = "embeddings"
         self.dim = dim
-        with self._raw_pg_connect() as conn:
+        with self._pg_connect() as conn:
             self._ensure_vector_extension(conn)
             register_vector(conn)
             self._create_tables_if_needed(conn, dim)
 
-    def _raw_pg_connect(self):
+    def _pg_connect(self):
         host = os.getenv('POSTGRES_HOST', 'localhost')
         port = int(os.getenv('POSTGRES_PORT', 5432))
         dbname = os.getenv('POSTGRES_DB', 'ragdb')
         user = os.getenv('POSTGRES_USER', 'postgres')
         password = os.getenv('POSTGRES_PASSWORD', 'postgres')
         conn = psycopg2.connect(host=host, port=port, dbname=dbname, user=user, password=password)
-        return conn
-
-    def _pg_connect(self):
-        conn = self._raw_pg_connect()
-        register_vector(conn)
         return conn
 
     def _ensure_vector_extension(self, conn):
@@ -100,9 +95,9 @@ class DataBaseController:
                 f"INSERT INTO {self.embeddings_table} (source_id, chunk, embedding) VALUES (%s, %s, %s);",
                 rows,
             )
-            conn.commit()
 
     def query_similar_vectors(self, query_vector, top_k=5):
+        vector_param = str(query_vector) if isinstance(query_vector, list) else query_vector
         with self._pg_connect() as conn:
             cur = conn.cursor()
             cur.execute(
@@ -110,10 +105,10 @@ class DataBaseController:
                 SELECT s.title, s.source_url, e.chunk
                 FROM {self.embeddings_table} e
                 JOIN {self.sources_table} s ON s.id = e.source_id
-                ORDER BY e.embedding <-> %s
+                ORDER BY e.embedding <-> %s::vector
                 LIMIT %s;
                 """,
-                (query_vector, top_k),
+                (vector_param, top_k),
             )
             results = cur.fetchall()
             return results

@@ -1,11 +1,10 @@
 import unittest
-import os
 from orchrastrator import Orchestrator
 
 class TestAgenticRAG(unittest.TestCase):
     def rag_search(self):
         orchestrator = Orchestrator()
-        query = "What is badminton?"
+        query = "what happened between iran and us recently"
         result = orchestrator.rag_search(query)
         print("Agentic RAG Result:\n", result)
         self.assertIsInstance(result, str)
@@ -14,14 +13,16 @@ class TestAgenticRAG(unittest.TestCase):
     def web_search(self):
         # Test the RAG search function directly (without agent) to ensure it returns results.
         orchestrator = Orchestrator()
-        rag_out = orchestrator.web_search_tavily('badminton latest news')
+        rag_out = orchestrator.web_search_tavily('what happened between iran and usa recently')
         print('RAG search output:\n', rag_out)
         self.assertIsInstance(rag_out, str)
 
     def agentic_query(self):
         # Test the full agentic RAG query flow with a sample query.
         orchestrator = Orchestrator()
-        response = orchestrator.agentic_rag_query("What are the latest news on badminton?")
+        #response = orchestrator.agentic_rag_query("what happened between iran and us recently")
+        response = orchestrator.agentic_rag_query("what is the latest technology in maistorage")
+        #response = orchestrator.agentic_rag_query("what is newton first law")
         print("Agentic RAG Query Response:\n", response)
         self.assertIsInstance(response, str)
         self.assertGreater(len(response), 0)
