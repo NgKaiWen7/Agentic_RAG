@@ -13,6 +13,7 @@ This project sets up an Agentic RAG system using Docker, with a Streamlit fronte
 2. Set your API keys in `.env`:
    ```
    LANGSEARCH_API_KEY=your_langsearch_key
+   TAVILY_API_KEY=your_talivy_key
    ```
 
 3. Build and run the services:
@@ -22,7 +23,7 @@ This project sets up an Agentic RAG system using Docker, with a Streamlit fronte
 
    This will:
    - Start the Ollama service
-   - Pull the llama3 model: ```ollama pull llama3```
+   - Pull the llama3 model: ```docker exec -it ollama ollama pull llama3```
    - Build and start the Streamlit app
 
 4. Access the Streamlit app at http://localhost:8501
