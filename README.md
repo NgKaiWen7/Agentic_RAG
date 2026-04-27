@@ -23,7 +23,7 @@ This project sets up an Agentic RAG system using Docker, with a Streamlit fronte
 
    This will:
    - Start the Ollama service
-   - Pull the llama3 model: ```docker exec -it ollama ollama pull llama3```
+   - Start postgress RAG database
    - Build and start the Streamlit app
 
 4. Access the Streamlit app at http://localhost:8501
@@ -31,7 +31,7 @@ This project sets up an Agentic RAG system using Docker, with a Streamlit fronte
 ## Services
 
 - **ollama**: Runs the Ollama LLM server on port 11434
-- **pull_model**: Pulls the llama2 model (runs once)
+- **pull_model**: ```docker exec -it ollama ollama pull llama3``` (runs once)
 - **app**: Streamlit application on port 8501
 
 ## Stopping
