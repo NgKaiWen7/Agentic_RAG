@@ -17,15 +17,21 @@ class TestAgenticRAG(unittest.TestCase):
         print('RAG search output:\n', rag_out)
         self.assertIsInstance(rag_out, str)
 
-    def agentic_query(self):
-        # Test the full agentic RAG query flow with a sample query.
+    def test_agentic_query(self):
         orchestrator = Orchestrator()
-        response = orchestrator.agentic_rag_query("what happened between iran and us recently")
-        response = orchestrator.agentic_rag_query("what is the latest technology in maistorage")
-        response = orchestrator.agentic_rag_query("what is newton first law")
-        print("Agentic RAG Query Response:\n", response)
-        self.assertIsInstance(response, str)
-        self.assertGreater(len(response), 0)
+    
+        test_queries = [
+            "what happened between iran and us recently",
+            "what is the latest technology in maistorage",
+            "what is newton first law"
+        ]
+    
+        for query in test_queries:
+            response = orchestrator.agentic_rag_query(query)
+            print(f"\nQuery: {query}\nResponse: {response}")
+    
+            self.assertIsInstance(response, str)
+            self.assertGreater(len(response), 0)
 
 if __name__ == '__main__':
     unittest.main()
