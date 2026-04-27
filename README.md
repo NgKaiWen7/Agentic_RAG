@@ -31,7 +31,7 @@ This project sets up an Agentic RAG system using Docker, with a Streamlit fronte
 ## Services
 
 - **ollama**: Runs the Ollama LLM server on port 11434
-- **pull_model**: ```docker exec -it ollama ollama pull llama3``` (runs once)
+- **pull_model**: ```docker exec -it agentic_rag-ollama-1 ollama pull llama3``` (runs once)
 - **app**: Streamlit application on port 8501
 
 ## Stopping
