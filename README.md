@@ -22,7 +22,7 @@ This project sets up an Agentic RAG system using Docker, with a Streamlit fronte
 
    This will:
    - Start the Ollama service
-   - Pull the llama2 model
+   - Pull the llama3 model: ```ollama pull llama3```
    - Build and start the Streamlit app
 
 4. Access the Streamlit app at http://localhost:8501
